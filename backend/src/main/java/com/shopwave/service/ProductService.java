@@ -79,7 +79,7 @@ public class ProductService {
         Inventory inv = Inventory.builder()
                 .product(product).quantity(initialStock).reserved(0)
                 .build();
-        inventoryRepository.save(inv);
+        inventoryRepository.sav e(inv);
 
         // Monolith: audit aynı transaction içinde yazılır — atomik
         auditService.log("PRODUCT_CREATED", "Product", product.getId(),
