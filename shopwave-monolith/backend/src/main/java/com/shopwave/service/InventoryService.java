@@ -4,7 +4,7 @@ import com.shopwave.domain.Inventory;
 import com.shopwave.exception.InsufficientStockException;
 import com.shopwave.exception.NotFoundException;
 import com.shopwave.repository.InventoryRepository;
-import com.shopwave.util.ChaosHelper; // <-- 1. Import eklendi
+import com.shopwave.util.ChaosHelper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -14,16 +14,6 @@ import java.util.List;
 
 /**
  * InventoryService — stok rezervasyon ve güncelleme işlemleri.
- *
- * Monolith'te bu servis, OrderService ile AYNI transaction içinde çalışır.
- * Sipariş kaydedilirken stok aynı anda rezerve edilir; rollback durumunda
- * her ikisi de geri alınır. Bu "free" atomiklik dağıtık sistemde kaybolur.
- *
- * LAB NOTU (Servis Ayrımı — Lab 3):
- *   Bu sınıf ayrı bir "inventory-service" Spring Boot uygulamasına taşınacak.
- *   OrderService HTTP ile iletişim kuracak.
- *   Ağ kesilmesi, timeout, partial failure senaryoları gözlemlenecek.
- *   Çözüm yolları: Saga (choreography / orchestration), 2PC, Outbox.
  */
 @Slf4j
 @Service
@@ -36,14 +26,15 @@ public class InventoryService {
 
     // ─── Queries ──────────────────────────────────────────────
 
-    @Transactional(readOnly = true)
+    // Okuma işlemlerine 5 saniye timeout eklendi
+    @Transactional(readOnly = true, timeout = 5)
     public Inventory getByProductId(Long productId) {
-        chaosHelper.injectLatency(); // <-- Gecikme eklendi (Ağ yavaşlığını simüle eder)
+        chaosHelper.injectLatency();
         return inventoryRepository.findByProductId(productId)
                 .orElseThrow(() -> new NotFoundException("Inventory not found for product: " + productId));
     }
 
-    @Transactional(readOnly = true)
+    @Transactional(readOnly = true, timeout = 5)
     public List<Inventory> getLowStock(int threshold) {
         return inventoryRepository.findLowStock(threshold);
     }
@@ -53,17 +44,11 @@ public class InventoryService {
     /**
      * Sipariş için stok ayır.
      * Pessimistic lock ile eş zamanlı isteklerde race condition önlenir.
-     *
-     * LAB NOTU:
-     *   Tek instance'ta bu yeterli. Birden fazla backend instance çalıştığında
-     *   DB lock hâlâ işe yarar (DB-level lock). Ama inventory ayrı servise
-     *   taşınırsa bu metot HTTP'ye dönüşür ve DB lock artık kullanılamaz.
      */
-    @Transactional
+    // Yazma/Locking işlemlerine 3 saniye (katı) timeout eklendi
+    @Transactional(timeout = 3)
     public void reserve(Long productId, int quantity) {
-        // LAB-2: Yapay gecikme (chaos delay) eklendi.
-        // @Transactional içinde olduğu için bu süre boyunca DB connection'ı meşgul kalacak!
-        chaosHelper.injectLatency(); // <-- 3. Asıl gecikme simülasyonu burada
+        chaosHelper.injectLatency(); // Eğer bu süre 3 saniyeyi aşarsa işlem iptal olur.
 
         Inventory inv = inventoryRepository.findByProductIdWithLock(productId)
                 .orElseThrow(() -> new NotFoundException("Inventory not found: " + productId));
@@ -81,9 +66,9 @@ public class InventoryService {
     }
 
     /** Sipariş iptalinde rezervasyonu geri bırak. */
-    @Transactional
+    @Transactional(timeout = 3)
     public void release(Long productId, int quantity) {
-        chaosHelper.injectLatency(); // İptal işlemlerinde de gecikme olabilir
+        chaosHelper.injectLatency();
 
         Inventory inv = inventoryRepository.findByProductIdWithLock(productId)
                 .orElseThrow(() -> new NotFoundException("Inventory not found: " + productId));
@@ -96,7 +81,7 @@ public class InventoryService {
     }
 
     /** Sipariş tesliminde fiziksel stoktan düş. */
-    @Transactional
+    @Transactional(timeout = 3)
     public void deduct(Long productId, int quantity) {
         Inventory inv = inventoryRepository.findByProductIdWithLock(productId)
                 .orElseThrow(() -> new NotFoundException("Inventory not found: " + productId));
@@ -109,7 +94,7 @@ public class InventoryService {
     }
 
     /** Manuel stok ekle (yeni sevkiyat geldiğinde). */
-    @Transactional
+    @Transactional(timeout = 5)
     public void addStock(Long productId, int quantity) {
         Inventory inv = inventoryRepository.findByProductIdWithLock(productId)
                 .orElseThrow(() -> new NotFoundException("Inventory not found: " + productId));
