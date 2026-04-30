@@ -1,15 +1,19 @@
 package com.shopwave.service;
 
+import com.shopwave.domain.IdempotencyRecord;
 import com.shopwave.domain.Inventory;
 import com.shopwave.exception.InsufficientStockException;
 import com.shopwave.exception.NotFoundException;
+import com.shopwave.repository.IdempotencyRepository;
 import com.shopwave.repository.InventoryRepository;
 import com.shopwave.util.ChaosHelper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.slf4j.MDC; // <-- Request ID (Traceability) için eklendi
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.LocalDateTime;
 import java.util.List;
 
 /**
@@ -21,12 +25,12 @@ import java.util.List;
 public class InventoryService {
 
     private final InventoryRepository inventoryRepository;
+    private final IdempotencyRepository idempotencyRepository; // <-- Eklendi
     private final AuditService        auditService;
     private final ChaosHelper         chaosHelper;
 
     // ─── Queries ──────────────────────────────────────────────
 
-    // Okuma işlemlerine 5 saniye timeout eklendi
     @Transactional(readOnly = true, timeout = 5)
     public Inventory getByProductId(Long productId) {
         chaosHelper.injectLatency();
@@ -43,12 +47,20 @@ public class InventoryService {
 
     /**
      * Sipariş için stok ayır.
-     * Pessimistic lock ile eş zamanlı isteklerde race condition önlenir.
+     * Idempotency eklendi: Aynı istek (retry) gelirse ikinci kez stok düşmez.
      */
-    // Yazma/Locking işlemlerine 3 saniye (katı) timeout eklendi
     @Transactional(timeout = 3)
-    public void reserve(Long productId, int quantity) {
-        chaosHelper.injectLatency(); // Eğer bu süre 3 saniyeyi aşarsa işlem iptal olur.
+    public void reserve(Long productId, int quantity, String idempotencyKey) {
+        // Loglarda bu işlemin hangi HTTP isteğine ait olduğunu yakalamak için MDC'den Request ID okunur
+        String requestId = MDC.get("requestId");
+
+        // 1. Idempotency Kontrolü: Bu istek daha önce başarıyla işlendi mi?
+        if (idempotencyKey != null && idempotencyRepository.existsById(idempotencyKey)) {
+            log.warn("[ReqID: {}] Idempotency hit! Rezervasyon isteği daha önce işlenmiş, atlanıyor. Key: {}", requestId, idempotencyKey);
+            return; // İşlem daha önce yapılmış, hata fırlatma, başarılı dön
+        }
+
+        chaosHelper.injectLatency();
 
         Inventory inv = inventoryRepository.findByProductIdWithLock(productId)
                 .orElseThrow(() -> new NotFoundException("Inventory not found: " + productId));
@@ -57,17 +69,29 @@ public class InventoryService {
             throw new InsufficientStockException(productId, inv.availableQuantity(), quantity);
         }
 
+        // 2. Stok işlemini yap
         inv.reserve(quantity);
         inventoryRepository.save(inv);
 
+        // 3. İşlemin başarıyla yapıldığını Idempotency tablosuna kaydet
+        if (idempotencyKey != null) {
+            idempotencyRepository.save(new IdempotencyRecord(idempotencyKey, "RESERVE", LocalDateTime.now()));
+        }
+
         auditService.log("STOCK_RESERVED", "Inventory", productId,
                 "qty=" + quantity + " remaining=" + inv.availableQuantity());
-        log.info("Stock reserved productId={} qty={} available={}", productId, quantity, inv.availableQuantity());
+        log.info("[ReqID: {}] Stock reserved productId={} qty={} available={}", requestId, productId, quantity, inv.availableQuantity());
     }
 
-    /** Sipariş iptalinde rezervasyonu geri bırak. */
     @Transactional(timeout = 3)
-    public void release(Long productId, int quantity) {
+    public void release(Long productId, int quantity, String idempotencyKey) {
+        String requestId = MDC.get("requestId");
+
+        if (idempotencyKey != null && idempotencyRepository.existsById(idempotencyKey)) {
+            log.warn("[ReqID: {}] Idempotency hit! İptal isteği daha önce işlenmiş. Key: {}", requestId, idempotencyKey);
+            return;
+        }
+
         chaosHelper.injectLatency();
 
         Inventory inv = inventoryRepository.findByProductIdWithLock(productId)
@@ -76,11 +100,14 @@ public class InventoryService {
         inv.release(quantity);
         inventoryRepository.save(inv);
 
+        if (idempotencyKey != null) {
+            idempotencyRepository.save(new IdempotencyRecord(idempotencyKey, "RELEASE", LocalDateTime.now()));
+        }
+
         auditService.log("STOCK_RELEASED", "Inventory", productId, "qty=" + quantity);
-        log.info("Stock released productId={} qty={}", productId, quantity);
+        log.info("[ReqID: {}] Stock released productId={} qty={}", requestId, productId, quantity);
     }
 
-    /** Sipariş tesliminde fiziksel stoktan düş. */
     @Transactional(timeout = 3)
     public void deduct(Long productId, int quantity) {
         Inventory inv = inventoryRepository.findByProductIdWithLock(productId)
@@ -93,7 +120,6 @@ public class InventoryService {
                 "qty=" + quantity + " remaining=" + inv.availableQuantity());
     }
 
-    /** Manuel stok ekle (yeni sevkiyat geldiğinde). */
     @Transactional(timeout = 5)
     public void addStock(Long productId, int quantity) {
         Inventory inv = inventoryRepository.findByProductIdWithLock(productId)
