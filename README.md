@@ -121,3 +121,4 @@ Bu özellikler sistem dağıtıklaştıkça **birer birer ortadan kalkacak**.
 - [ ] Prometheus metrikleri
 - [ ] Grafana dashboard
 - [ ] Golden signals: latency, traffic, errors, saturation
+# shopwave-monolith
