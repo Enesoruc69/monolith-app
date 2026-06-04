@@ -19,6 +19,11 @@ public class GlobalExceptionHandler {
         return problem(HttpStatus.NOT_FOUND, ex.getMessage());
     }
 
+    @ExceptionHandler(OrderTimeoutException.class)
+    public ProblemDetail handleOrderTimeout(OrderTimeoutException ex) {
+        return problem(HttpStatus.GATEWAY_TIMEOUT, ex.getMessage());
+    }
+
     @ExceptionHandler(InsufficientStockException.class)
     public ProblemDetail handleInsufficientStock(InsufficientStockException ex) {
         return problem(HttpStatus.CONFLICT, ex.getMessage());

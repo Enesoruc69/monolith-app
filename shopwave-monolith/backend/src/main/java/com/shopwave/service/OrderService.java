@@ -7,12 +7,14 @@ import com.shopwave.dto.OrderDto.OrderItemDto;
 import com.shopwave.dto.PlaceOrderRequest;
 import com.shopwave.exception.InvalidOrderStateException;
 import com.shopwave.exception.NotFoundException;
+import com.shopwave.exception.OrderTimeoutException;
 import com.shopwave.repository.CustomerRepository;
 import com.shopwave.repository.OrderRepository;
 import com.shopwave.repository.ProductRepository;
 import com.shopwave.util.ChaosHelper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -51,6 +53,9 @@ public class OrderService {
     private final AuditService       auditService;
     private final ChaosHelper        chaosHelper;
 
+    @Value("${shopwave.timeout.order-placement-ms:5000}")
+    private long orderPlacementTimeoutMs;
+
     // ─── Queries ──────────────────────────────────────────────
 
     @Transactional(readOnly = true)
@@ -83,10 +88,13 @@ public class OrderService {
      */
     @Transactional
     public OrderDto placeOrder(PlaceOrderRequest req) {
+        long startTime = System.currentTimeMillis();
         // TODO LAB-5: X-Idempotency-Key kontrolü
         // TODO LAB-4: Timeout deadline — bu metot X ms'den uzun sürerse TimeoutException fırlat
         // TODO LAB-2: Chaos delay — yapay gecikme enjekte et
         chaosHelper.injectLatency();
+
+        checkTimeout(startTime, "Before customer verification");
 
         Customer customer = customerRepository.findById(req.getCustomerId())
                 .orElseThrow(() -> new NotFoundException("Customer not found: " + req.getCustomerId()));
@@ -101,6 +109,7 @@ public class OrderService {
 
         // Her sipariş kalemi için: ürünü bul, stok rezerve et, item ekle
         for (PlaceOrderRequest.OrderItemRequest itemReq : req.getItems()) {
+            checkTimeout(startTime, "Before reserving stock for product: " + itemReq.getProductId());
             Product product = productRepository.findByIdWithLock(itemReq.getProductId())
                     .orElseThrow(() -> new NotFoundException("Product not found: " + itemReq.getProductId()));
 
@@ -121,6 +130,7 @@ public class OrderService {
             order.getItems().add(item);
         }
 
+        checkTimeout(startTime, "Before persisting order");
         order.recalculateTotal();
         orderRepository.save(order);
 
@@ -132,6 +142,15 @@ public class OrderService {
                 order.getOrderRef(), customer.getId(), order.getTotalAmount());
 
         return toDto(order);
+    }
+
+    private void checkTimeout(long startTime, String stage) {
+        long elapsed = System.currentTimeMillis() - startTime;
+        if (elapsed > orderPlacementTimeoutMs) {
+            log.error("Order placement timeout exceeded at stage '{}'. Limit: {}ms, Elapsed: {}ms", 
+                    stage, orderPlacementTimeoutMs, elapsed);
+            throw new OrderTimeoutException("Order placement timed out during: " + stage);
+        }
     }
 
     /** Siparişi onayla (ödeme alındı). */
