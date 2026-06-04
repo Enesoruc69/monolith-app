@@ -12,12 +12,12 @@ api.interceptors.request.use(config => {
 })
 
 // TODO LAB-5: Her isteğe X-Idempotency-Key header ekle (POST için)
-// api.interceptors.request.use(config => {
-//   if (config.method === 'post') {
-//     config.headers['X-Idempotency-Key'] = crypto.randomUUID()
-//   }
-//   return config
-// })
+api.interceptors.request.use(config => {
+  if (config.method === 'post') {
+    config.headers['X-Idempotency-Key'] = crypto.randomUUID()
+  }
+  return config
+})
 
 export const productApi = {
   list: ()                              => api.get<Product[]>('/api/v1/products').then(r => r.data),

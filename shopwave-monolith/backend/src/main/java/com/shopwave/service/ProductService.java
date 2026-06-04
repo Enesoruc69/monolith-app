@@ -60,9 +60,10 @@ public class ProductService {
     public ProductDto create(String sku, String name, String description,
                              BigDecimal price, Long categoryId, int initialStock) {
         // TODO LAB-5: X-Idempotency-Key kontrolü — aynı SKU çift gelirse ikinci isteği ignore et
-
-        if (productRepository.findBySku(sku).isPresent()) {
-            throw new IllegalArgumentException("SKU already exists: " + sku);
+        java.util.Optional<Product> existingProduct = productRepository.findBySku(sku);
+        if (existingProduct.isPresent()) {
+            log.warn("Product SKU already exists. Ignoring duplicate create request for SKU: {}", sku);
+            return toDto(existingProduct.get());
         }
 
         Category category = categoryId != null

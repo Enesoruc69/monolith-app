@@ -34,9 +34,11 @@ public class OrderController {
 
     @PostMapping
     @ResponseStatus(HttpStatus.CREATED)
-    public OrderDto place(@Valid @RequestBody PlaceOrderRequest req) {
+    public OrderDto place(
+            @Valid @RequestBody PlaceOrderRequest req,
+            @RequestHeader(value = "X-Idempotency-Key", required = false) String idempotencyKey) {
         // TODO LAB-5: X-Idempotency-Key header'ını oku ve OrderService'e ilet
-        return orderService.placeOrder(req);
+        return orderService.placeOrder(req, idempotencyKey);
     }
 
     @PostMapping("/{id}/confirm")

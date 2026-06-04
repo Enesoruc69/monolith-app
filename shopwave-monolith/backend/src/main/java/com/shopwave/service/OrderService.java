@@ -9,15 +9,18 @@ import com.shopwave.exception.InvalidOrderStateException;
 import com.shopwave.exception.NotFoundException;
 import com.shopwave.exception.OrderTimeoutException;
 import com.shopwave.repository.CustomerRepository;
+import com.shopwave.repository.IdempotencyRepository;
 import com.shopwave.repository.OrderRepository;
 import com.shopwave.repository.ProductRepository;
 import com.shopwave.util.ChaosHelper;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
@@ -52,9 +55,14 @@ public class OrderService {
     private final InventoryService   inventoryService;
     private final AuditService       auditService;
     private final ChaosHelper        chaosHelper;
+    private final IdempotencyRepository idempotencyRepository;
+    private final ObjectMapper       objectMapper;
 
     @Value("${shopwave.timeout.order-placement-ms:5000}")
     private long orderPlacementTimeoutMs;
+
+    @Value("${shopwave.idempotency.enabled:false}")
+    private boolean idempotencyEnabled;
 
     // ─── Queries ──────────────────────────────────────────────
 
@@ -87,10 +95,22 @@ public class OrderService {
      * Stok rezervasyonu ve sipariş kaydı atomik — ya hepsi, ya hiçbiri.
      */
     @Transactional
-    public OrderDto placeOrder(PlaceOrderRequest req) {
+    public OrderDto placeOrder(PlaceOrderRequest req, String idempotencyKey) {
         long startTime = System.currentTimeMillis();
-        // TODO LAB-5: X-Idempotency-Key kontrolü
-        // TODO LAB-4: Timeout deadline — bu metot X ms'den uzun sürerse TimeoutException fırlat
+
+        if (idempotencyEnabled && idempotencyKey != null && !idempotencyKey.trim().isEmpty()) {
+            java.util.Optional<IdempotencyRecord> recordOpt = idempotencyRepository.findById(idempotencyKey);
+            if (recordOpt.isPresent()) {
+                log.info("Idempotency hit! Returning cached response for key: {}", idempotencyKey);
+                try {
+                    return objectMapper.readValue(recordOpt.get().getResponseBody(), OrderDto.class);
+                } catch (Exception e) {
+                    log.error("Failed to deserialize cached response for key: {}", idempotencyKey, e);
+                    throw new RuntimeException("Idempotency read error", e);
+                }
+            }
+        }
+
         // TODO LAB-2: Chaos delay — yapay gecikme enjekte et
         chaosHelper.injectLatency();
 
@@ -119,7 +139,9 @@ public class OrderService {
 
             // InventoryService.reserve() bu transaction'a katılır.
             // Dağıtık mimaride bu satır HTTP çağrısına dönüşecek → atomiklik bozulacak.
-            inventoryService.reserve(product.getId(), itemReq.getQuantity());
+            // Benzersizliği sağlamak için idempotencyKey + "_" + productId bileşik anahtarı kullanılır.
+            String itemIdempotencyKey = idempotencyKey != null ? idempotencyKey + "_" + product.getId() : null;
+            inventoryService.reserve(product.getId(), itemReq.getQuantity(), itemIdempotencyKey);
 
             OrderItem item = OrderItem.builder()
                     .order(order)
@@ -134,6 +156,24 @@ public class OrderService {
         order.recalculateTotal();
         orderRepository.save(order);
 
+        OrderDto responseDto = toDto(order);
+
+        if (idempotencyEnabled && idempotencyKey != null && !idempotencyKey.trim().isEmpty()) {
+            try {
+                String responseBody = objectMapper.writeValueAsString(responseDto);
+                IdempotencyRecord record = IdempotencyRecord.builder()
+                        .idempotencyKey(idempotencyKey)
+                        .operation("placeOrder")
+                        .responseBody(responseBody)
+                        .createdAt(LocalDateTime.now())
+                        .build();
+                idempotencyRepository.save(record);
+                log.info("Cached idempotency response for key: {}", idempotencyKey);
+            } catch (Exception e) {
+                log.error("Failed to serialize and cache response for key: {}", idempotencyKey, e);
+            }
+        }
+
         auditService.log("ORDER_PLACED", "Order", order.getId(),
                 "ref=" + order.getOrderRef() + " total=" + order.getTotalAmount()
                 + " items=" + order.getItems().size());
@@ -141,7 +181,7 @@ public class OrderService {
         log.info("Order placed ref={} customerId={} total={}",
                 order.getOrderRef(), customer.getId(), order.getTotalAmount());
 
-        return toDto(order);
+        return responseDto;
     }
 
     private void checkTimeout(long startTime, String stage) {
