@@ -10,6 +10,7 @@ import com.shopwave.exception.NotFoundException;
 import com.shopwave.repository.CustomerRepository;
 import com.shopwave.repository.OrderRepository;
 import com.shopwave.repository.ProductRepository;
+import com.shopwave.util.ChaosHelper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -23,7 +24,7 @@ import java.util.UUID;
  * OrderService — sipariş iş akışının kalbi.
  *
  * ┌─────────────────────────────────────────────────────────────────┐
- * │  Monolith'te placeOrder() tek bir @Transactional içinde:        │
+ * │  Monolith'te placeOrder() tek bir @Transactional inside:        │
  * │    1. Müşteri doğrulanır                                        │
  * │    2. Her ürün için stok rezerve edilir  (InventoryService)     │
  * │    3. Order + OrderItem'lar kaydedilir                          │
@@ -48,6 +49,7 @@ public class OrderService {
     private final ProductRepository  productRepository;
     private final InventoryService   inventoryService;
     private final AuditService       auditService;
+    private final ChaosHelper        chaosHelper;
 
     // ─── Queries ──────────────────────────────────────────────
 
@@ -84,6 +86,7 @@ public class OrderService {
         // TODO LAB-5: X-Idempotency-Key kontrolü
         // TODO LAB-4: Timeout deadline — bu metot X ms'den uzun sürerse TimeoutException fırlat
         // TODO LAB-2: Chaos delay — yapay gecikme enjekte et
+        chaosHelper.injectLatency();
 
         Customer customer = customerRepository.findById(req.getCustomerId())
                 .orElseThrow(() -> new NotFoundException("Customer not found: " + req.getCustomerId()));
