@@ -52,6 +52,10 @@ public class GlobalExceptionHandler {
         ProblemDetail pd = ProblemDetail.forStatusAndDetail(status, detail);
         pd.setProperty("timestamp", Instant.now().toString());
         // TODO LAB-1: correlation-id'yi buraya ekle → her hata yanıtında görünsün
+        String correlationId = org.slf4j.MDC.get("correlationId");
+        if (correlationId != null) {
+            pd.setProperty("correlationId", correlationId);
+        }
         return pd;
     }
 }

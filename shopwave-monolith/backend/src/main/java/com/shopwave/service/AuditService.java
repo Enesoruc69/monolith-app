@@ -31,11 +31,18 @@ public class AuditService {
     @Transactional(propagation = Propagation.REQUIRED)
     public void log(String eventType, String aggregate, Long aggregateId, String payload) {
         // TODO LAB-1: MDC'deki correlation-id'yi payload'a ekle
+        String correlationId = org.slf4j.MDC.get("correlationId");
+        String finalPayload = payload;
+        if (correlationId != null) {
+            finalPayload = (payload == null || payload.isEmpty()) 
+                    ? "correlationId=" + correlationId 
+                    : payload + " correlationId=" + correlationId;
+        }
         AuditLog entry = AuditLog.builder()
                 .eventType(eventType)
                 .aggregate(aggregate)
                 .aggregateId(aggregateId)
-                .payload(payload)
+                .payload(finalPayload)
                 .build();
         auditLogRepository.save(entry);
         log.info("AUDIT event={} aggregate={} id={}", eventType, aggregate, aggregateId);

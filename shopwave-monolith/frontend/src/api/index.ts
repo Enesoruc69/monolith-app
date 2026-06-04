@@ -6,10 +6,10 @@ const BASE = (import.meta as any).env?.VITE_API_BASE_URL ?? ''
 const api = axios.create({ baseURL: BASE })
 
 // TODO LAB-1: Her isteğe otomatik X-Correlation-ID header ekle
-// api.interceptors.request.use(config => {
-//   config.headers['X-Correlation-ID'] = crypto.randomUUID()
-//   return config
-// })
+api.interceptors.request.use(config => {
+  config.headers['X-Correlation-ID'] = crypto.randomUUID()
+  return config
+})
 
 // TODO LAB-5: Her isteğe X-Idempotency-Key header ekle (POST için)
 // api.interceptors.request.use(config => {
